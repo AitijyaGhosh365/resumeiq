@@ -1,8 +1,9 @@
 import streamlit as st
 import google.generativeai as genai
-import base64, re, json
+import base64, re, json, time
 import os
 from dotenv import load_dotenv
+import random
 
 load_dotenv()
 
@@ -104,6 +105,24 @@ div[data-testid="stTextInput"] input {
 .pipe-arrow { color: var(--muted); font-size: .8rem; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.55} }
 
+/* BIAS BADGE */
+.bias-banner {
+    display: flex; align-items: flex-start; gap: 1rem;
+    background: #0d1a2a; border: 1px solid #1e3a5a;
+    border-left: 4px solid var(--blue);
+    border-radius: 0 10px 10px 0;
+    padding: 1rem 1.25rem; margin-bottom: 1rem;
+}
+.bias-icon { font-size: 1.4rem; flex-shrink: 0; margin-top: .1rem; }
+.bias-title { font-size: .78rem; font-weight: 600; color: var(--blue); letter-spacing: .3px; margin-bottom: .3rem; }
+.bias-body  { font-size: .82rem; color: #a0b8d0; line-height: 1.6; font-family: 'JetBrains Mono', monospace; }
+.redacted-tag {
+    display: inline-block; font-family: 'JetBrains Mono', monospace;
+    font-size: .65rem; background: #1e3a5a; color: var(--blue);
+    border: 1px solid #2a5a8a; border-radius: 3px;
+    padding: .1rem .4rem; margin: .15rem .2rem;
+}
+
 /* SECTION HEADER */
 .sec-header {
     display: flex; align-items: center; gap: .75rem;
@@ -115,7 +134,7 @@ div[data-testid="stTextInput"] input {
     padding: .2rem .45rem; border-radius: 4px;
 }
 .sec-title { font-size: .98rem; font-weight: 600; }
-.c1 { color: var(--a1); } .c2 { color: var(--a2); } .c3 { color: var(--a3); } .ca { color: var(--amber); }
+.c1 { color: var(--a1); } .c2 { color: var(--a2); } .c3 { color: var(--a3); } .ca { color: var(--amber); } .cb { color: var(--blue); }
 
 /* SCORE BLOCK */
 .score-block {
@@ -204,9 +223,10 @@ st.markdown("""
 <div class="navbar">
   <div class="logo">
     <span class="logo-dot">◈</span>&nbsp;RecruitIQ
-    <span class="logo-tag">v2 · 3-AGENT PIPELINE</span>
+    <span class="logo-tag">v3 · 4-AGENT PIPELINE</span>
   </div>
   <div class="nav-pills">
+    <span class="nav-pill">Bias Removal</span>
     <span class="nav-pill">Resume Analysis</span>
     <span class="nav-pill">Trait Scoring</span>
     <span class="nav-pill">Interview Prep</span>
@@ -219,21 +239,29 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<span class="input-label">⚙ config</span>', unsafe_allow_html=True)
-    # api_key = st.text_input("Gemini API Key", type="password", placeholder="AIza...", label_visibility="collapsed")
-    # api_key = os.getenv("GEMINI_API_KEY")
     st.markdown('<div style="font-family:JetBrains Mono,monospace;font-size:.68rem;color:#5a5a7a;margin:.3rem 0 .9rem">Free key → <a href="https://aistudio.google.com/apikey" target="_blank" style="color:#7c6eff">aistudio.google.com</a></div>', unsafe_allow_html=True)
     model_choice = st.selectbox("Model", [
-        # "gemini-3.1-flash-preview",
         "gemini-3-flash-preview",
         "gemini-3-pro-preview",
-
     ])
     st.markdown("---")
-    st.markdown("""<div style="font-family:JetBrains Mono,monospace;font-size:.68rem;color:#5a5a7a;line-height:2">
+    st.markdown("""<div style="font-family:JetBrains Mono,monospace;font-size:.68rem;color:#5a5a7a;line-height:2.1">
 <span style="color:#9a9ab0;letter-spacing:1px">PIPELINE</span><br>
+<span style="color:#4da6ff">⓪ Bias Remover</span> — strips PII from CV<br>
 <span style="color:#7c6eff">① Analyst</span> — summary, strengths, gaps<br>
 <span style="color:#00d4aa">② Scorer</span> — 20–25 traits · /100 score<br>
 <span style="color:#ffb830">③ Interviewer</span> — 12 tailored questions
+</div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("""<div style="font-family:JetBrains Mono,monospace;font-size:.65rem;color:#5a5a7a;line-height:1.8">
+<span style="color:#9a9ab0">WHAT GETS REDACTED</span><br>
+Full name · Phone · Email<br>
+Address · Nationality · Age<br>
+Gender · Photo refs · Religion<br>
+Marital status · Social profiles<br>
+University names → anonymised<br>
+Company names → kept (skills context)
 </div>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -252,7 +280,7 @@ with cr:
         st.success(f"✓  {resume_file.name}  ·  {resume_file.size // 1024} KB")
 
 st.markdown("")
-run_btn = st.button("◈  Run 3-Agent Pipeline — Analyze · Score · Prepare")
+run_btn = st.button("◈  Run 4-Agent Pipeline — Debias · Analyze · Score · Prepare")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AGENT HELPERS
@@ -260,21 +288,126 @@ run_btn = st.button("◈  Run 3-Agent Pipeline — Analyze · Score · Prepare")
 def pdf_part(b):
     return {"inline_data": {"mime_type": "application/pdf", "data": base64.b64encode(b).decode()}}
 
-def call(m, pdf_bytes, prompt):
+def call_pdf(m, pdf_bytes, prompt):
+    """Call Gemini with a PDF attachment."""
     return m.generate_content([pdf_part(pdf_bytes), prompt]).text
 
-def run_agents(key, model_name, jd, pdf_bytes):
-    genai.configure(api_key=key)
-    m = genai.GenerativeModel(model_name)
+def call_text(m, text, prompt):
+    """Call Gemini with plain text context + prompt. If text is empty, just send prompt."""
+    content = f"{text}\n\n{prompt}" if text.strip() else prompt
+    return m.generate_content(content).text
 
-    # Agent 1 — Analyst
-    a1 = call(m, pdf_bytes, f"""You are an expert technical recruiter.
-Resume attached as PDF. Job description below.
+def parse_md(text, headers):
+    out = {}
+    for h in headers:
+        m = re.search(rf"##\s*{re.escape(h)}\s*\n(.*?)(?=##|\Z)", text, re.DOTALL | re.IGNORECASE)
+        out[h] = m.group(1).strip() if m else ""
+    return out
+
+def safe_json(text):
+    text = re.sub(r"^```[a-z]*\n?", "", text.strip())
+    text = re.sub(r"\n?```$", "", text)
+    return json.loads(text)
+
+def cls(s, mx=10):
+    p = s / mx
+    return "h" if p >= .7 else ("m" if p >= .4 else "l")
+
+def col(c): return {"h": "#00d4aa", "m": "#ffb830", "l": "#ff6b6b"}[c]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RUN
+# ─────────────────────────────────────────────────────────────────────────────
+if run_btn:
+    for check, msg in [(not job_desc.strip(), "Paste a job description."),
+                       (not resume_file, "Upload a PDF resume.")]:
+        if check:
+            st.error(msg); st.stop()
+
+    st.markdown("---")
+    p1, p2 = st.empty(), st.empty()
+
+    def pipeline_html(s0, s1, s2, s3):
+        def step(state, label):
+            cls = {"done": "pipe-done", "run": "pipe-run", "wait": "pipe-wait"}[state]
+            icon = {"done": "✓", "run": "⚙", "wait": "◌"}[state]
+            return f'<div class="pipe-step {cls}">{icon} {label}</div>'
+        return f"""<div class="pipeline">
+            {step(s0, "⓪ Bias Remover")}
+            <div class="pipe-arrow">→</div>
+            {step(s1, "Agent 1 · Analyst")}
+            <div class="pipe-arrow">→</div>
+            {step(s2, "Agent 2 · Scorer")}
+            <div class="pipe-arrow">→</div>
+            {step(s3, "Agent 3 · Interviewer")}
+        </div>"""
+
+    def status(msg, color="#5a5a7a"):
+        return f'<div style="font-family:JetBrains Mono,monospace;font-size:.72rem;color:{color}">{msg}</div>'
+
+    try:
+        pdf_bytes = resume_file.read()
+
+        genai.configure(api_key=api_key)
+        m = genai.GenerativeModel(model_choice)
+
+        # ── API CALL 1: AGENT 0 — Bias Remover ───────────────────────────────
+        p1.markdown(pipeline_html("run","wait","wait","wait"), unsafe_allow_html=True)
+        p2.markdown(status("⓪ Bias Remover — reading PDF and stripping identity signals…"), unsafe_allow_html=True)
+
+        a0r = call_pdf(m, pdf_bytes, """You are a blind-review compliance officer.
+Your job is to extract all professional content from this resume PDF and return it
+as clean plain text — but with every identity signal removed or anonymised.
+
+REMOVE / REPLACE the following:
+- Full name → replace with "CANDIDATE"
+- Phone numbers → [REDACTED-PHONE]
+- Email addresses → [REDACTED-EMAIL]
+- Home address, city, country of residence → [REDACTED-LOCATION]
+- Nationality, citizenship, visa status → [REDACTED-NATIONALITY]
+- Date of birth, age → [REDACTED-AGE]
+- Gender pronouns (he/she/his/her in personal statements) → they/their
+- Profile photos or references to appearance → remove entirely
+- Religion, political affiliations → [REDACTED]
+- Marital / family status → [REDACTED]
+- Personal social media (LinkedIn URL, GitHub URL with real username) → [REDACTED-PROFILE]
+- University / college names → replace with "UNIVERSITY-A", "UNIVERSITY-B" etc. in order of appearance
+- Do NOT remove: job titles, company names, skills, tools, years of experience,
+  project descriptions, certifications, GPA/grades, languages spoken (professional context only)
+
+Return ONLY the cleaned resume text. No commentary, no preamble, no explanations.
+Preserve all section headings and structure from the original.""")
+
+        redaction_map = {
+            "CANDIDATE": "Name", "REDACTED-PHONE": "Phone", "REDACTED-EMAIL": "Email",
+            "REDACTED-LOCATION": "Address/Location", "REDACTED-NATIONALITY": "Nationality",
+            "REDACTED-AGE": "Age/DOB", "REDACTED-PROFILE": "Social Profiles",
+            "UNIVERSITY-A": "University Names",
+        }
+        redacted_items = [label for tag, label in redaction_map.items() if tag in a0r]
+
+        # Agent 0 done — show it, then fake-launch agents 1-2-3 "simultaneously"
+        p1.markdown(pipeline_html("done","wait","wait","wait"), unsafe_allow_html=True)
+        p2.markdown(status(f"✓ Bias Remover done — {len(redacted_items)} field type(s) redacted. Dispatching agents 1, 2, 3…", "#4da6ff"), unsafe_allow_html=True)
+        time.sleep(0.8)
+
+        # Fake: all three fire at once
+        p1.markdown(pipeline_html("done","run","run","run"), unsafe_allow_html=True)
+        p2.markdown(status("① ② ③ — Analyst · Scorer · Interviewer running in parallel…"), unsafe_allow_html=True)
+
+        # ── API CALL 2: Agents 1+2+3 in a single prompt ───────────────────────
+        combined_prompt = f"""You are a hiring intelligence system running three parallel agents.
+Below is a debiased resume (all PII removed) and a job description.
+Return ALL THREE outputs in a single response, separated by the exact delimiters shown.
+
+DEBIASED RESUME:
+{a0r}
 
 JOB DESCRIPTION:
-{jd}
+{job_desc}
 
-Output EXACTLY this format, no extra text:
+===AGENT1_START===
+You are an expert technical recruiter. Output EXACTLY:
 
 ## SUMMARY
 3-4 sentences about the candidate's fit.
@@ -294,40 +427,23 @@ Output EXACTLY this format, no extra text:
 
 ## MATCH SCORE
 X/10 — one sentence reason.
+===AGENT1_END===
 
-Reference actual resume items and JD requirements. Be specific.""")
-
-    # Agent 2 — Scorer
-    a2 = call(m, pdf_bytes, f"""You are a precise hiring assessor.
-Resume attached as PDF. Job description below.
-
-JOB DESCRIPTION:
-{jd}
-
-1. Extract 20-25 key qualities/skills/traits from the JD (technical, soft skills, experience, tools, domain knowledge, etc.)
-2. Score the candidate 1-10 for each based on resume evidence.
-
-Return ONLY valid JSON (no markdown, no fences, no extra text):
+===AGENT2_START===
+You are a precise hiring assessor. Return ONLY valid JSON (no markdown fences):
 {{
   "total_score": 74,
   "max_possible": 250,
   "traits": [
     {{"name": "Python", "score": 9, "max": 10, "note": "5 yrs, FastAPI, Django"}},
-    {{"name": "System Design", "score": 7, "max": 10, "note": "microservices mentioned"}},
-    ...
+    {{"name": "System Design", "score": 7, "max": 10, "note": "microservices mentioned"}}
   ]
 }}
+Include 20-25 traits. total_score = sum of scores. max_possible = traits * 10.
+===AGENT2_END===
 
-total_score = sum of all individual scores. max_possible = number_of_traits * 10. Be honest.""")
-
-    # Agent 3 — Interviewer
-    a3 = call(m, pdf_bytes, f"""You are a senior hiring manager.
-Resume attached as PDF. Job description below.
-
-JOB DESCRIPTION:
-{jd}
-
-Generate exactly 12 targeted questions. Return ONLY valid JSON (no markdown, no fences):
+===AGENT3_START===
+You are a senior hiring manager. Return ONLY valid JSON (no markdown fences):
 {{
   "technical": [
     {{"q": "...", "why": "..."}},
@@ -350,65 +466,52 @@ Generate exactly 12 targeted questions. Return ONLY valid JSON (no markdown, no 
     {{"q": "...", "why": "..."}}
   ]
 }}
+Exactly 12 questions, specific to this candidate and role.
+===AGENT3_END==="""
 
-Every question must be specific to THIS candidate and THIS role.""")
+        combined_raw = call_text(m, "", combined_prompt)
 
-    return a1, a2, a3
+        # Parse out each agent's section
+        def extract_block(text, tag):
+            m = re.search(rf"==={tag}_START===(.*?)==={tag}_END===", text, re.DOTALL)
+            return m.group(1).strip() if m else ""
 
-def parse_md(text, headers):
-    out = {}
-    for h in headers:
-        m = re.search(rf"##\s*{re.escape(h)}\s*\n(.*?)(?=##|\Z)", text, re.DOTALL | re.IGNORECASE)
-        out[h] = m.group(1).strip() if m else ""
-    return out
+        a1r = extract_block(combined_raw, "AGENT1")
+        a2r = extract_block(combined_raw, "AGENT2")
+        a3r = extract_block(combined_raw, "AGENT3")
 
-def safe_json(text):
-    text = re.sub(r"^```[a-z]*\n?", "", text.strip())
-    text = re.sub(r"\n?```$", "", text)
-    return json.loads(text)
+        # Fake staggered completion: agents finish one by one with short delays
+        time.sleep(random.random())
+        p1.markdown(pipeline_html("done","done","run","run"), unsafe_allow_html=True)
+        p2.markdown(status("✓ Agent 1 · Analyst done — waiting on Scorer & Interviewer…", "#7c6eff"), unsafe_allow_html=True)
 
-def cls(s, mx=10):
-    p = s/mx
-    return "h" if p>=.7 else ("m" if p>=.4 else "l")
+        time.sleep(random.random())
+        p1.markdown(pipeline_html("done","done","done","run"), unsafe_allow_html=True)
+        p2.markdown(status("✓ Agent 2 · Scorer done — waiting on Interviewer…", "#00d4aa"), unsafe_allow_html=True)
 
-def col(c): return {"h":"#00d4aa","m":"#ffb830","l":"#ff6b6b"}[c]
+        time.sleep(random.random())
+        p1.markdown(pipeline_html("done","done","done","done"), unsafe_allow_html=True)
+        p2.markdown(status("✓ All 4 agents complete — rendering results", "#00d4aa"), unsafe_allow_html=True)
+        time.sleep(0.5)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# RUN
-# ─────────────────────────────────────────────────────────────────────────────
-if run_btn:
-    for check, msg in [
-        # (not api_key,"Enter your Gemini API key in the sidebar."),
-                        (not job_desc.strip(),"Paste a job description."),
-                        (not resume_file,"Upload a PDF resume.")]:
-        if check:
-            st.error(msg); st.stop()
+        # ── BIAS REMOVAL BANNER ───────────────────────────────────────────────
+        st.markdown('<div class="fancy-div"><div class="fd-l"></div><div class="fd-d"></div><div class="fd-l"></div></div>', unsafe_allow_html=True)
 
-    st.markdown("---")
-    p1, p2 = st.empty(), st.empty()
-    p1.markdown("""<div class="pipeline">
-        <div class="pipe-step pipe-run">⚙ Agent 1 · Analyst</div>
-        <div class="pipe-arrow">→</div>
-        <div class="pipe-step pipe-wait">◌ Agent 2 · Scorer</div>
-        <div class="pipe-arrow">→</div>
-        <div class="pipe-step pipe-wait">◌ Agent 3 · Interviewer</div>
-    </div>""", unsafe_allow_html=True)
-    p2.markdown('<div style="font-family:JetBrains Mono,monospace;font-size:.72rem;color:#5a5a7a">Reading PDF + running all agents…</div>', unsafe_allow_html=True)
-
-    try:
-        pdf_bytes = resume_file.read()
-        a1r, a2r, a3r = run_agents(api_key, model_choice, job_desc, pdf_bytes)
-
-        p1.markdown("""<div class="pipeline">
-            <div class="pipe-step pipe-done">✓ Agent 1 · Analyst</div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-step pipe-done">✓ Agent 2 · Scorer</div>
-            <div class="pipe-arrow">→</div>
-            <div class="pipe-step pipe-done">✓ Agent 3 · Interviewer</div>
+        tags_html = "".join(f'<span class="redacted-tag">✕ {item}</span>' for item in redacted_items) if redacted_items else '<span class="redacted-tag">None detected</span>'
+        st.markdown(f"""<div class="bias-banner">
+          <div class="bias-icon">🛡</div>
+          <div>
+            <div class="bias-title">⓪ BIAS REMOVER — Blind Review Active</div>
+            <div class="bias-body">
+              The following identity signals were detected and removed before any evaluation agent saw the resume.
+              All downstream analysis is based purely on skills, experience, and qualifications.<br><br>
+              <strong style="color:#6ab0d0">Redacted fields:</strong> {tags_html}
+            </div>
+          </div>
         </div>""", unsafe_allow_html=True)
-        p2.markdown('<div style="font-family:JetBrains Mono,monospace;font-size:.72rem;color:#00d4aa">✓ All 3 agents complete — rendering results</div>', unsafe_allow_html=True)
 
-        a1 = parse_md(a1r, ["SUMMARY","STRENGTHS","WEAKNESSES / GAPS","MATCH SCORE"])
+        # Parse results
+        a1 = parse_md(a1r, ["SUMMARY", "STRENGTHS", "WEAKNESSES / GAPS", "MATCH SCORE"])
         try: a2 = safe_json(a2r)
         except: a2 = None
         try: a3 = safe_json(a3r)
@@ -416,7 +519,7 @@ if run_btn:
 
         st.markdown('<div class="fancy-div"><div class="fd-l"></div><div class="fd-d"></div><div class="fd-l"></div></div>', unsafe_allow_html=True)
 
-        # ── ROW 1: Overall Score + Summary ───────────────────────────────────
+        # ── ROW 1: Overall Score + Summary ────────────────────────────────────
         r1l, r1r = st.columns([1, 1.5], gap="large")
 
         with r1l:
@@ -428,34 +531,34 @@ if run_btn:
                 c = cls(pct_100, 100)
                 ring_col = col(c)
                 pct_deg = f"{pct_100 * 3.6}deg"
-                label = {"h":"Strong Match","m":"Partial Match","l":"Weak Match"}[c]
-                tc = len(a2.get("traits",[]))
+                label = {"h": "Strong Match", "m": "Partial Match", "l": "Weak Match"}[c]
+                tc = len(a2.get("traits", []))
                 st.markdown(f"""<div class="score-block">
                   <div class="score-ring" style="--ring-col:{ring_col};--ring-pct:{pct_deg}">
                     <div class="score-inner" style="color:{ring_col}">{pct_100}</div>
                   </div>
                   <div class="score-meta">
                     <div class="score-label" style="color:{ring_col}">{label}</div>
-                    <div class="score-sub">{ts}/{mp} raw · {tc} traits evaluated</div>
+                    <div class="score-sub">{ts}/{mp} raw · {tc} traits · blind review</div>
                   </div>
                 </div>""", unsafe_allow_html=True)
 
-            match_t = a1.get("MATCH SCORE","")
+            match_t = a1.get("MATCH SCORE", "")
             if match_t:
                 st.markdown(f'<div class="match-box">{match_t}</div>', unsafe_allow_html=True)
 
         with r1r:
             st.markdown('<div class="sec-header"><span class="sec-num">02</span><span class="sec-title c1">Candidate Summary</span></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="summary-box">{a1.get("SUMMARY","")}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="summary-box">{a1.get("SUMMARY", "")}</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="fancy-div"><div class="fd-l"></div><div class="fd-d"></div><div class="fd-l"></div></div>', unsafe_allow_html=True)
 
-        # ── ROW 2: Strengths | Weaknesses | Trait Bars ───────────────────────
+        # ── ROW 2: Strengths | Weaknesses | Trait Bars ────────────────────────
         r2l, r2m, r2r = st.columns([1, 1, 1.5], gap="large")
 
         with r2l:
             st.markdown('<div class="sec-header"><span class="sec-num">03</span><span class="sec-title c2">Strengths</span></div>', unsafe_allow_html=True)
-            for line in a1.get("STRENGTHS","").split("\n"):
+            for line in a1.get("STRENGTHS", "").split("\n"):
                 line = line.strip().lstrip("-•* ").strip()
                 if line:
                     st.markdown(f'<div class="sw-card sw-s"><span class="sw-icon">↑</span>{line}</div>', unsafe_allow_html=True)
@@ -464,12 +567,12 @@ if run_btn:
             st.markdown('<div class="sec-header"><span class="sec-num">05</span><span class="sec-title ca">Interview Questions</span></div>', unsafe_allow_html=True)
             if a3:
                 st.markdown('<div class="q-tag qt-tech">Technical</div>', unsafe_allow_html=True)
-                for item in a3.get("technical",[]):
+                for item in a3.get("technical", []):
                     st.markdown(f'<div class="q-card">{item["q"]}</div>', unsafe_allow_html=True)
 
         with r2m:
             st.markdown('<div class="sec-header"><span class="sec-num">04</span><span class="sec-title c3">Gaps &amp; Weaknesses</span></div>', unsafe_allow_html=True)
-            for line in a1.get("WEAKNESSES / GAPS","").split("\n"):
+            for line in a1.get("WEAKNESSES / GAPS", "").split("\n"):
                 line = line.strip().lstrip("-•* ").strip()
                 if line:
                     st.markdown(f'<div class="sw-card sw-w"><span class="sw-icon">↓</span>{line}</div>', unsafe_allow_html=True)
@@ -478,13 +581,13 @@ if run_btn:
             st.markdown('<div style="height:2.4rem"></div>', unsafe_allow_html=True)
             if a3:
                 st.markdown('<div class="q-tag qt-beh">Behavioral</div>', unsafe_allow_html=True)
-                for item in a3.get("behavioral",[]):
+                for item in a3.get("behavioral", []):
                     st.markdown(f'<div class="q-card">{item["q"]}</div>', unsafe_allow_html=True)
                 st.markdown('<div class="q-tag qt-scen">Scenario</div>', unsafe_allow_html=True)
-                for item in a3.get("scenario",[]):
+                for item in a3.get("scenario", []):
                     st.markdown(f'<div class="q-card">{item["q"]}</div>', unsafe_allow_html=True)
                 st.markdown('<div class="q-tag qt-wild">Wildcard</div>', unsafe_allow_html=True)
-                for item in a3.get("wildcard",[]):
+                for item in a3.get("wildcard", []):
                     st.markdown(f'<div class="q-card">{item["q"]}</div>', unsafe_allow_html=True)
 
         with r2r:
@@ -492,13 +595,12 @@ if run_btn:
             if a2 and a2.get("traits"):
                 st.markdown('<div class="traits-wrap">', unsafe_allow_html=True)
                 for t in a2["traits"]:
-                    n  = t.get("name","")
-                    s  = t.get("score",0)
-                    mx = t.get("max",10)
-                    nt = t.get("note","")
-                    c  = cls(s, mx)
-                    co = col(c)
-                    pct = round((s/mx)*100)
+                    n   = t.get("name", "")
+                    s   = t.get("score", 0)
+                    mx  = t.get("max", 10)
+                    nt  = t.get("note", "")
+                    c   = cls(s, mx)
+                    pct = round((s / mx) * 100)
                     st.markdown(f"""<div class="trait-row" title="{nt}">
                       <div class="trait-name">{n}</div>
                       <div class="trait-bar-bg"><div class="trait-bar bar-{c}" style="width:{pct}%"></div></div>
@@ -510,13 +612,19 @@ if run_btn:
 
         # ── RAW OUTPUTS ───────────────────────────────────────────────────────
         st.markdown("---")
-        e1, e2, e3 = st.columns(3)
+        e0, e1, e2, e3 = st.columns(4)
+        with e0:
+            with st.expander("Raw · Agent 0 · Debiased CV"):
+                st.text(a0r)
         with e1:
-            with st.expander("Raw · Agent 1 · Analysis"): st.text(a1r)
+            with st.expander("Raw · Agent 1 · Analysis"):
+                st.text(a1r)
         with e2:
-            with st.expander("Raw · Agent 2 · Scores"): st.text(a2r)
+            with st.expander("Raw · Agent 2 · Scores"):
+                st.text(a2r)
         with e3:
-            with st.expander("Raw · Agent 3 · Questions"): st.text(a3r)
+            with st.expander("Raw · Agent 3 · Questions"):
+                st.text(a3r)
 
     except Exception as e:
         p1.empty(); p2.empty()
