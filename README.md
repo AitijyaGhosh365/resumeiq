@@ -1,16 +1,36 @@
 # RecruitIQ — AI-Powered Resume Analyzer & Interview Prep
 
-> A 3-agent Streamlit app powered by Google Gemini that analyzes a candidate's resume against a job description, scores them across 20–25 traits, and generates tailored interview questions.
+> A 4-agent Streamlit app powered by Google Gemini that blindly reviews a candidate's resume, analyzes fit, scores across 20–25 traits, and generates tailored interview questions — all in just **2 API calls**.
 
 ---
 
 ## What It Does
 
-| Agent | Role | Output |
-|---|---|---|
-| **① Analyst** | Reads the CV + JD together | Summary, Strengths, Gaps, Match Score /10 |
-| **② Scorer** | Extracts 20–25 traits from the JD | Scores each trait /10 → Overall score /100 |
-| **③ Interviewer** | Studies both inputs | 12 tailored questions across 4 categories |
+| Agent | Role | API Call | Output |
+|---|---|---|---|
+| **⓪ Bias Remover** | Strips all PII from the raw PDF | Call 1 | Anonymised plain-text resume |
+| **① Analyst** | Evaluates fit against the JD | Call 2 (combined) | Summary · Strengths · Gaps · Match Score /10 |
+| **② Scorer** | Extracts & rates 20–25 traits | Call 2 (combined) | Trait scores → Overall score /100 |
+| **③ Interviewer** | Generates targeted questions | Call 2 (combined) | 12 questions across 4 categories |
+
+Agents 1, 2, and 3 run as a **single combined prompt** — the UI shows them completing asynchronously for clarity.
+
+---
+
+### What Gets Redacted by Agent 0
+
+| Field | Replacement |
+|---|---|
+| Full name | `CANDIDATE` |
+| Phone number | `[REDACTED-PHONE]` |
+| Email address | `[REDACTED-EMAIL]` |
+| Address / city / country | `[REDACTED-LOCATION]` |
+| Nationality / visa status | `[REDACTED-NATIONALITY]` |
+| Date of birth / age | `[REDACTED-AGE]` |
+| Gender pronouns | `they / their` |
+| Social profile URLs | `[REDACTED-PROFILE]` |
+| University names | `UNIVERSITY-A`, `UNIVERSITY-B`… |
+| Company names | **kept** — needed for skills context |
 
 ---
 
@@ -30,7 +50,7 @@ git clone https://github.com/yourname/recruitiq.git
 cd recruitiq
 ```
 
-Or just place `app.py` and `requirements.txt` in a folder and navigate to it.
+Or just place `app.py`, `requirements.txt`, and `.env` in a folder.
 
 ---
 
@@ -68,13 +88,13 @@ Create a `.env` file in the same folder as `app.py`:
 touch .env
 ```
 
-Add your Gemini API key to it:
+Add your Gemini API key:
 
 ```
 GEMINI_API_KEY=AIzaSy...your_key_here
 ```
 
-> The app reads this automatically via `python-dotenv`. You do **not** need to paste the key into the UI.
+> The app reads this automatically via `python-dotenv`. No need to paste the key into the UI.
 
 ---
 
@@ -84,7 +104,7 @@ GEMINI_API_KEY=AIzaSy...your_key_here
 streamlit run app.py
 ```
 
-The app will open in your browser at `http://localhost:8501`.
+Opens in your browser at `http://localhost:8501`.
 
 ---
 
@@ -92,14 +112,18 @@ The app will open in your browser at `http://localhost:8501`.
 
 1. **Paste** the full job description into the left text box
 2. **Upload** the candidate's resume as a PDF
-3. **Select** a Gemini model from the sidebar (default: `gemini-3-flash-preview`)
+3. **Select** a Gemini model from the sidebar
 4. **Click** the Run button
-5. Wait ~15–30 seconds for all 3 agents to complete
-6. Review the results:
+5. Watch the 4-step pipeline progress in real time:
+   - Agent 0 finishes first (bias removal is confirmed before anything else runs)
+   - Agents 1, 2, 3 appear to run in parallel, completing with staggered UI updates
+6. Review results:
+   - 🛡 Blind Review banner showing exactly which fields were redacted
    - Overall score ring + candidate summary
-   - Strengths (left) and Gaps (middle) side by side
-   - Trait breakdown bars (right) — hover for evidence notes
+   - Strengths (left column) and Gaps (middle column)
+   - Trait breakdown bars with hover notes (right column)
    - Interview questions grouped by category below each column
+   - Raw output expanders at the bottom for debugging
 
 ---
 
@@ -109,7 +133,7 @@ The app will open in your browser at `http://localhost:8501`.
 recruitiq/
 ├── app.py              # Main Streamlit application
 ├── requirements.txt    # Python dependencies
-├── .env                # Your API key (not committed to git)
+├── .env                # Your API key (never commit this)
 └── README.md           # This file
 ```
 
@@ -125,18 +149,36 @@ python-dotenv>=1.0.0
 
 ---
 
-## Notes
+## How the 2-Call Architecture Works
 
-- The PDF is sent **inline** to Gemini — no files are stored anywhere
-- All 3 agents run sequentially in a single button click
-- If Agent 2 or 3 returns malformed JSON, the raw output is shown in an expander at the bottom for debugging
-- Larger/denser resumes may take longer — `gemini-1.5-pro` gives the most thorough results but is slower
+```
+User clicks Run
+│
+├── API Call 1 ── Agent 0 (Bias Remover)
+│                 Reads raw PDF → returns anonymised plain text
+│                 UI: pipeline shows ⓪ running → ✓ done
+│
+└── API Call 2 ── Combined prompt with 3 delimited sections
+                  ===AGENT1_START=== ... ===AGENT1_END===
+                  ===AGENT2_START=== ... ===AGENT2_END===
+                  ===AGENT3_START=== ... ===AGENT3_END===
+                  
+                  Response is split by regex into a1r, a2r, a3r
+                  UI fakes staggered completion with time.sleep delays
+```
 
 ---
 
-## .gitignore recommendation
+## Notes
 
-If pushing to GitHub, make sure to ignore your `.env`:
+- The PDF is sent **inline** to Gemini — nothing is stored anywhere
+- If Agent 2 or 3 returns malformed JSON, the raw output is shown in the expander at the bottom for debugging
+- `gemini-3-pro-preview` gives the most thorough results; `gemini-3-flash-preview` is faster and cheaper
+- University names are anonymised but company names are kept — company prestige is a valid signal, university name is not
+
+---
+
+## .gitignore Recommendation
 
 ```
 .env
